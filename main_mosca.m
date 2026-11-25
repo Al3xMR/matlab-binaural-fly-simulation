@@ -42,6 +42,10 @@ t_vec = (0:N-1)' / Fs;
 hrir_cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
 angle_step = 2;
 
+num_blocks = ceil(N / hop);
+traj = zeros(num_blocks, 3);
+block_i = 0;
+
 for idx = 1:hop:N
     idx_end = min(idx + hop - 1, N);
     block = src(idx:idx_end);
@@ -55,6 +59,9 @@ for idx = 1:hop:N
     ys = radius * sin(theta);
     zs = 0.35 * sin(2 * pi * 0.5 * t);
     source = [xs, ys, zs];
+
+    block_i = block_i + 1;
+    traj(block_i, :) = source;
 
     rel_pos = source - receptor;
     dist = norm(rel_pos);
@@ -87,4 +94,17 @@ end
 output = output / max(abs(output(:))) * 0.95;
 
 audiowrite('mosca_3D.wav', output, Fs);
+
+figure('Name', 'Trayectoria 3D');
+plot3(traj(:, 1), traj(:, 2), traj(:, 3), 'b-', 'LineWidth', 1.2);
+hold on;
+plot3(receptor(1), receptor(2), receptor(3), 'ro', 'MarkerSize', 10, 'MarkerFaceColor', 'r');
+grid on;
+axis equal;
+xlabel('X (m)');
+ylabel('Y (m)');
+zlabel('Z (m)');
+title('Trayectoria Source vs Receptor');
+legend('Source (mosca)', 'Receptor (cabeza)');
+
 sound(output, Fs);
