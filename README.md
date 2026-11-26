@@ -1,6 +1,6 @@
 # Simulación Binaural 3D de una Mosca en MATLAB (HRTF / KEMAR)
 
-Este proyecto simula el sonido tridimensional de una mosca volando alrededor de la cabeza de un oyente durante 60 segundos. A partir de una grabación simple de audio y ecuaciones de movimiento en 3D, el programa calcula en cada instante la posición relativa entre la fuente sonora (*source*) y el oyente (*receptor*), y procesa el sonido para que al escucharlo con **audífonos** se perciba dirección (izquierda, derecha, adelante, atrás), altura (arriba, abajo) y distancia (cerca, lejos).
+Este proyecto simula el sonido tridimensional de una mosca volando alrededor de la cabeza de un oyente durante 60 segundos. A partir de una grabación base de audio y ecuaciones de movimiento en 3D, el programa calcula en cada instante la posición relativa entre la fuente sonora (*source*) y el oyente (*receptor*), y procesa el sonido para que al escucharlo con **audífonos** se perciba dirección (izquierda, derecha, adelante, atrás), altura (arriba, abajo) y distancia (cerca, lejos).
 
 > **Nota importante:** El efecto espacial 3D solo se percibe correctamente usando **audífonos**, ya que depende de enviar señales acústicas distintas e independientes a cada oído.
 
@@ -23,18 +23,23 @@ El valor RMS mide la energía o volumen efectivo de una señal de audio en una v
 
 $$\text{RMS} = \sqrt{\frac{1}{M} \sum_{k=1}^{M} x[k]^2}$$
 
-En lugar de mirar muestra por muestra (que sube y baja miles de veces por segundo), el RMS nos da una curva suave del volumen real del audio. Lo usamos para detectar y recortar automáticamente los silencios del inicio y final de `mosca.wav`.
+En lugar de mirar muestra por muestra (que oscila miles de veces por segundo), el RMS nos da una curva suave del volumen real del audio. Lo usamos para detectar y recortar automáticamente los silencios del inicio y final de `mosca.wav`.
 
-### 3. *Crossfade* de potencia constante
-Si repites un audio pegándolo uno detrás de otro, se escucha un corte brusco. Si haces una transición lineal (bajar uno de 1 a 0 y subir el otro de 0 a 1), el volumen cae ligeramente en la mitad de la unión. Para mantener la energía sonora constante durante el empalme, multiplicamos el final por $\cos(\theta)$ y el inicio por $\sin(\theta)$ con $\theta \in [0, \pi/2]$, aprovechando la identidad trigonométrica:
+### 3. *Crossfade* de potencia constante (para extender el audio a 60 s)
+Si repites un audio pegándolo uno detrás de otro, se escucha un corte brusco. Si haces una transición lineal, el volumen cae ligeramente en la mitad de la unión. Para mantener la energía sonora constante durante el empalme de las repeticiones, multiplicamos el final por $\cos(\theta)$ y el inicio por $\sin(\theta)$ con $\theta \in [0, \pi/2]$, aprovechando que:
 
 $$\cos^2(\theta) + \sin^2(\theta) = 1$$
 
-### 4. Convolución y *Overlap-Add* (OLA)
+### 4. Convolución por bloques y *crossfade* exponencial (*fade-out* / *fade-in*)
 Aplicar una HRIR a un audio se hace mediante la operación matemática de **convolución** (`conv` en MATLAB). Como la mosca está en movimiento constante, no podemos aplicar un solo ángulo a todo el audio:
 1. Dividimos el audio de 60 segundos en bloques pequeños (`hop = 2048` muestras, unos 46 ms).
 2. A cada bloque le aplicamos la HRIR correspondiente a la posición de la mosca en ese instante.
-3. Al convolucionar un bloque de $2048$ muestras con una HRIR de $512$ muestras, el resultado mide $2048 + 512 - 1 = 2559$ muestras. Esas $511$ muestras extra ("cola" del filtro) se **suman solapadas** al inicio del siguiente bloque (*Overlap-Add*) para que no existan chasquidos ni cortes.
+3. Al convolucionar un bloque de $2048$ muestras con una HRIR de $512$ muestras, el resultado crece a $2048 + 512 - 1 = 2559$ muestras.
+4. Para unir los bloques sin clics ni saltos bruscos en esas $511$ muestras extra de solapamiento (`ov = L_hrir - 1`), se aplica un **desvanecimiento exponencial**:
+   * **Fade-out** al final de cada bloque (excepto el último): $w_{\text{out}}(n) = e^{-5n}$
+   * **Fade-in** al inicio del siguiente bloque (excepto el primero): $w_{\text{in}}(n) = 1 - e^{-5n}$
+   
+   donde $n \in [0, 1]$. Al sumar ambos bloques en la zona de cruce, la suma de pesos se mantiene igual a $1$ en todo momento: $e^{-5n} + (1 - e^{-5n}) = 1$.
 
 ### 5. Atenuación por distancia
 En el mundo real, la amplitud de una onda sonora disminuye inversamente proporcional a la distancia $r$ entre la fuente y el receptor:
@@ -122,15 +127,31 @@ el_deg = max(-40, min(90, rad2deg(el_rad)));
 
 Cada llamada a `interphrir` lee varios archivos `.dat` del disco. Para evitar miles de lecturas repetidas en un audio de 60 segundos, los ángulos se cuantizan en pasos de $2^\circ$ (`angle_step = 2`) y se almacenan en un `containers.Map` (`hrir_cache`). Si un ángulo ya fue calculado en una vuelta anterior, se recupera instantáneamente de la memoria RAM.
 
-### Paso 6: Convolución estéreo, normalización y gráfica 3D
+### Paso 6: Convolución estéreo, *fades* exponenciales, normalización y gráfica 3D
 
-Cada bloque se multiplica por la ganancia por distancia (`1 / max(dist, 0.25)`), se convoluciona por separado con `h(:, 1)` (oído izquierdo) y `h(:, 2)` (oído derecho), y se acumula en `output` mediante *Overlap-Add*.
+Cada bloque se multiplica por la ganancia por distancia (`1 / max(dist, 0.25)`) y se convoluciona por separado con `h(:, 1)` (oído izquierdo) y `h(:, 2)` (oído derecho).
+
+Antes de sumar el bloque al vector `output`, se aplican las ventanas exponenciales en las `511` muestras de solapamiento:
+
+* `conv_L(1:ov) .* fade_in` y `conv_R(1:ov) .* fade_in` para todos los bloques excepto el primero (`idx > 1`).
+* `conv_L(end-ov+1:end) .* fade_out` y `conv_R(end-ov+1:end) .* fade_out` para todos los bloques excepto el último (`idx_end < N`).
 
 Al finalizar el bucle:
 
 1. Se normaliza la señal al 95% del rango máximo (`* 0.95`) para evitar distorsión (*clipping*).
 2. Se guarda el resultado en `mosca_3D.wav`.
 3. Se grafica la trayectoria 3D guardada en `traj` junto con la posición del receptor usando `plot3`.
+
+### Resumen: dónde se usa cada punto de ubicación en `main_mosca.m`
+
+| Variable / Dato | Qué representa | Dónde se usa |
+| --- | --- | --- |
+| `receptor` | Posición fija de la cabeza `[0, 0, 0]` | Para calcular el vector relativo `rel_pos` y graficar el punto rojo en `plot3`. |
+| `source` (`xs, ys, zs`) | Posición instantánea de la mosca en el bloque actual | Para calcular `rel_pos`, la distancia `dist` y guardarse en `traj`. |
+| `rel_pos` | Vector desde el receptor hacia la fuente (`source - receptor`) | Entra a `norm()` para la atenuación ($1/r$) y a `cart2sph()` para sacar ángulos. |
+| `az_deg`, `el_deg` | Dirección esférica de la mosca respecto a la cabeza | Se cuantizan en `az_key`, `el_key` y se pasan a `interphrir()` para obtener el filtro HRIR. |
+| `traj` | Historial de todas las posiciones `source` bloque por bloque | Al final del script en `plot3()` para dibujar el recorrido 3D. |
+| `full/elev*/*.dat` | Puntos fijos medidos en laboratorio (dataset KEMAR) | Los leen `interphrir.m` y `readhrtf.m` para construir el filtro del ángulo pedido. |
 
 ---
 

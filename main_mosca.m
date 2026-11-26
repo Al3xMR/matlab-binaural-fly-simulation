@@ -36,7 +36,12 @@ receptor = [0, 0, 0];
 
 hop = 2048;
 L_hrir = 512;
-output = zeros(N + L_hrir, 2);
+ov = L_hrir - 1;
+n_ov = (0:ov-1)' / (ov - 1);
+fade_out = exp(-5 * n_ov);
+fade_in = 1 - exp(-5 * n_ov);
+
+output = zeros(N + ov, 2);
 t_vec = (0:N-1)' / Fs;
 
 hrir_cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
@@ -85,6 +90,15 @@ for idx = 1:hop:N
 
     conv_L = conv(block * gain, h(:, 1));
     conv_R = conv(block * gain, h(:, 2));
+
+    if idx > 1
+        conv_L(1:ov) = conv_L(1:ov) .* fade_in;
+        conv_R(1:ov) = conv_R(1:ov) .* fade_in;
+    end
+    if idx_end < N
+        conv_L(end-ov+1:end) = conv_L(end-ov+1:end) .* fade_out;
+        conv_R(end-ov+1:end) = conv_R(end-ov+1:end) .* fade_out;
+    end
 
     out_range = idx : (idx + length(conv_L) - 1);
     output(out_range, 1) = output(out_range, 1) + conv_L;
